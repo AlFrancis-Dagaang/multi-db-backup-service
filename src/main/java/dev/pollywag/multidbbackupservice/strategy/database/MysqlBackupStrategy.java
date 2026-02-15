@@ -6,7 +6,9 @@ import org.springframework.stereotype.Component;
 
 import java.io.*;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.GZIPOutputStream;
@@ -92,6 +94,31 @@ public class MysqlBackupStrategy implements DatabaseBackupStrategy{
                     "Incremental backup requires selected tables."
             );
         }
+
+        // Check if tables exist in the database
+        try (Connection conn = DriverManager.getConnection(
+                "jdbc:mysql://" + request.getHost() + ":" + request.getPort() + "/" + request.getDbName(),
+                request.getUsername(),
+                request.getPassword())) {
+
+            DatabaseMetaData metaData = conn.getMetaData();
+            List<String> nonExistentTables = new ArrayList<>();
+
+            for (String table : request.getTables()) {
+                try (ResultSet rs = metaData.getTables(null, null, table, new String[]{"TABLE"})) {
+                    if (!rs.next()) {
+                        nonExistentTables.add(table);
+                    }
+                }
+            }
+
+            if (!nonExistentTables.isEmpty()) {
+                throw new BackupException(
+                        "The following tables do not exist in the database: " + nonExistentTables
+                );
+            }
+        }
+
 
         List<String> command = new ArrayList<>();
 
