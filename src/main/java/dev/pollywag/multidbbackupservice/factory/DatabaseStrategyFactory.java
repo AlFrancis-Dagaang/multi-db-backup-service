@@ -6,8 +6,6 @@ import dev.pollywag.multidbbackupservice.strategy.database.DatabaseBackupStrateg
 import dev.pollywag.multidbbackupservice.strategy.database.MysqlBackupStrategy;
 import org.springframework.stereotype.Component;
 
-
-
 @Component
 public class DatabaseStrategyFactory {
     private final MysqlBackupStrategy mysqlStrategy;
@@ -17,7 +15,7 @@ public class DatabaseStrategyFactory {
     }
 
     public DatabaseBackupStrategy getStrategy(DatabaseType type) {
-        return switch(type) {
+        return switch (type) {
             case MYSQL -> mysqlStrategy;
             default -> throw new BackupException("Unsupported DB type: " + type);
         };

@@ -2,6 +2,7 @@ package dev.pollywag.multidbbackupservice.strategy.database;
 
 import dev.pollywag.multidbbackupservice.exception.BackupException;
 import dev.pollywag.multidbbackupservice.model.request.BackupRequest;
+import dev.pollywag.multidbbackupservice.model.request.RestoreRequest;
 import org.springframework.stereotype.Component;
 
 import java.io.*;
@@ -11,11 +12,14 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 
 @Component
-public class MysqlBackupStrategy implements DatabaseBackupStrategy{
+public class MysqlBackupStrategy implements DatabaseBackupStrategy {
+
+    // ─── Connection test ───────────────────────────────────────────────────────
 
     @Override
     public boolean testConnection(BackupRequest request) {
@@ -27,51 +31,53 @@ public class MysqlBackupStrategy implements DatabaseBackupStrategy{
         }
     }
 
+    // ─── Full backup ───────────────────────────────────────────────────────────
+
     @Override
     public File performBackup(BackupRequest request, String tempFilePath) {
         try {
             File outputFile = new File(tempFilePath);
-
-            // ensure parent directory exists
             outputFile.getParentFile().mkdirs();
 
-            // build mysqldump command
             List<String> command = new ArrayList<>();
-
             command.add("mysqldump");
-            command.add("-h");
-            command.add(request.getHost());
-            command.add("-P");
-            command.add(String.valueOf(request.getPort()));
-            command.add("-u");
-            command.add(request.getUsername());
+            command.add("-h"); command.add(request.getHost());
+            command.add("-P"); command.add(String.valueOf(request.getPort()));
+            command.add("-u"); command.add(request.getUsername());
             command.add("-p" + request.getPassword());
             command.add(request.getDbName());
 
             ProcessBuilder pb = new ProcessBuilder(command);
-
-            // merge error stream
-            pb.redirectErrorStream(true);
+            pb.redirectErrorStream(false); // ✅ keep stderr separate from SQL output
 
             Process process = pb.start();
 
-            // write dump to file with compression
+            // Drain stderr in background so warnings don't bleed into the SQL file
+            new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(process.getErrorStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        System.err.println("[mysqldump] " + line);
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }).start();
+
+            // Write ONLY clean SQL stdout to file
             try (
                     InputStream inputStream = process.getInputStream();
-                    FileOutputStream fos = new FileOutputStream(outputFile);
-                    GZIPOutputStream gzipOut = new GZIPOutputStream(fos)
+                    FileOutputStream fos = new FileOutputStream(outputFile)
             ) {
-
                 byte[] buffer = new byte[8192];
                 int length;
-
                 while ((length = inputStream.read(buffer)) != -1) {
-                    gzipOut.write(buffer, 0, length);
+                    fos.write(buffer, 0, length);
                 }
             }
 
             int exitCode = process.waitFor();
-
             if (exitCode != 0) {
                 throw new BackupException("mysqldump failed with exit code " + exitCode);
             }
@@ -84,18 +90,14 @@ public class MysqlBackupStrategy implements DatabaseBackupStrategy{
         }
     }
 
-    @Override
-    public File performIncrementalBackup(BackupRequest request,
-                                         String outputPath) throws Exception {
+    // ─── Incremental backup ────────────────────────────────────────────────────
 
-        if (request.getTables() == null ||
-                request.getTables().isEmpty()) {
-            throw new BackupException(
-                    "Incremental backup requires selected tables."
-            );
+    @Override
+    public File performIncrementalBackup(BackupRequest request, String outputPath) throws Exception {
+        if (request.getTables() == null || request.getTables().isEmpty()) {
+            throw new BackupException("Incremental backup requires selected tables.");
         }
 
-        // Check if tables exist in the database
         try (Connection conn = DriverManager.getConnection(
                 "jdbc:mysql://" + request.getHost() + ":" + request.getPort() + "/" + request.getDbName(),
                 request.getUsername(),
@@ -113,78 +115,123 @@ public class MysqlBackupStrategy implements DatabaseBackupStrategy{
             }
 
             if (!nonExistentTables.isEmpty()) {
-                throw new BackupException(
-                        "The following tables do not exist in the database: " + nonExistentTables
-                );
+                throw new BackupException("The following tables do not exist in the database: " + nonExistentTables);
             }
         }
 
-
         List<String> command = new ArrayList<>();
-
         command.add("mysqldump");
-        command.add("-h");
-        command.add(request.getHost());
-
-        command.add("-P");
-        command.add(String.valueOf(request.getPort()));
-
-        command.add("-u");
-        command.add(request.getUsername());
-
+        command.add("-h"); command.add(request.getHost());
+        command.add("-P"); command.add(String.valueOf(request.getPort()));
+        command.add("-u"); command.add(request.getUsername());
         command.add("-p" + request.getPassword());
-
         command.add(request.getDbName());
-
-        // add selected tables
         command.addAll(request.getTables());
 
         ProcessBuilder pb = new ProcessBuilder(command);
-
         pb.redirectOutput(new File(outputPath));
-        pb.redirectErrorStream(true);
+        pb.redirectErrorStream(false); // ✅ fix here too
 
         Process process = pb.start();
+
+// Drain stderr
+        new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getErrorStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.err.println("[mysqldump incremental] " + line);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }).start();
 
         int exitCode = process.waitFor();
 
         if (exitCode != 0) {
-            throw new BackupException(
-                    "Incremental backup failed. mysqldump exit code: " + exitCode
-            );
+            throw new BackupException("Incremental backup failed. mysqldump exit code: " + exitCode);
         }
 
         return new File(outputPath);
     }
 
+    // ─── Compress ──────────────────────────────────────────────────────────────
+
     @Override
     public File compressBackup(File inputFile) throws Exception {
-
         String gzipFilePath = inputFile.getAbsolutePath() + ".gz";
 
         try (
                 FileInputStream fis = new FileInputStream(inputFile);
                 FileOutputStream fos = new FileOutputStream(gzipFilePath);
-                java.util.zip.GZIPOutputStream gzipOS =
-                        new java.util.zip.GZIPOutputStream(fos)
+                GZIPOutputStream gzipOS = new GZIPOutputStream(fos)
         ) {
-
-            byte[] buffer = new byte[1024];
+            byte[] buffer = new byte[8192];
             int len;
-
             while ((len = fis.read(buffer)) > 0) {
                 gzipOS.write(buffer, 0, len);
             }
         }
 
-        // optional: delete original sql file
+        // Delete the raw .sql file after compression
         inputFile.delete();
 
         return new File(gzipFilePath);
     }
 
+    // ─── Decompress ────────────────────────────────────────────────────────────
 
+    @Override
+    public File decompressBackup(File compressedFile) throws Exception {
+        String decompressedPath = compressedFile.getAbsolutePath();
+        if (decompressedPath.endsWith(".gz")) {
+            decompressedPath = decompressedPath.substring(0, decompressedPath.length() - 3);
+        }
 
+        File decompressedFile = new File(decompressedPath);
 
+        try (
+                GZIPInputStream gzipIn = new GZIPInputStream(
+                        new BufferedInputStream(new FileInputStream(compressedFile)));
+                BufferedOutputStream bos = new BufferedOutputStream(
+                        new FileOutputStream(decompressedFile))
+        ) {
+            byte[] buffer = new byte[8192];
+            int length;
+            while ((length = gzipIn.read(buffer)) != -1) {
+                bos.write(buffer, 0, length);
+            }
+            bos.flush();
+        }
 
+        return decompressedFile;
+    }
+
+    // ─── Restore ───────────────────────────────────────────────────────────────
+
+    @Override
+    public void restoreBackup(File dumpFile, RestoreRequest request) throws Exception {
+        List<String> command = new ArrayList<>();
+        command.add("mysql");
+        command.add("-h"); command.add(request.getTargetHost());
+        command.add("-P"); command.add(String.valueOf(request.getTargetPort()));
+        command.add("-u"); command.add(request.getTargetUsername());
+        command.add("--password=" + request.getTargetPassword());
+        command.add(request.getTargetDbName());
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.redirectInput(dumpFile);
+        pb.redirectErrorStream(true);
+
+        Process process = pb.start();
+
+        String output = new String(process.getInputStream().readAllBytes());
+        System.out.println(">>> mysql output: " + output);
+
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new BackupException("mysql restore failed with exit code " + exitCode + " — " + output);
+        }
+    }
 }

@@ -10,5 +10,4 @@ public class MultiDbBackupServiceApplication {
     public static void main(String[] args) {
         SpringApplication.run(MultiDbBackupServiceApplication.class, args);
     }
-
 }
