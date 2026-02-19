@@ -48,7 +48,7 @@ public class MysqlBackupStrategy implements DatabaseBackupStrategy {
             command.add(request.getDbName());
 
             ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(false); // ✅ keep stderr separate from SQL output
+            pb.redirectErrorStream(false); //keep stderr separate from SQL output
 
             Process process = pb.start();
 
@@ -130,7 +130,7 @@ public class MysqlBackupStrategy implements DatabaseBackupStrategy {
 
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectOutput(new File(outputPath));
-        pb.redirectErrorStream(false); // ✅ fix here too
+        pb.redirectErrorStream(false); // fix here too
 
         Process process = pb.start();
 
