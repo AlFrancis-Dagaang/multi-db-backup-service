@@ -8,6 +8,8 @@ import dev.pollywag.multidbbackupservice.model.response.RestoreResponse;
 import dev.pollywag.multidbbackupservice.service.BackupService;
 import dev.pollywag.multidbbackupservice.service.LogService;
 import dev.pollywag.multidbbackupservice.service.RestoreService;
+
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -48,6 +50,6 @@ public class MultiDbController {
     public ResponseEntity<BackupLog> getLogById(@PathVariable("id") String id) {
         System.out.println(id);
         BackupLog log = logService.getLogById(id);
-        return ResponseEntity.ok(log);
+        return ResponseEntity.status(HttpStatus.OK).body(log);
     }
 }
