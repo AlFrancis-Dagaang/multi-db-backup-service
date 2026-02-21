@@ -46,6 +46,11 @@ public class LocalStorageStrategy implements StorageStrategy {
         }
     }
 
+    @Override
+    public File resolveToLocalFile(String storagePath) {
+        return new File(storagePath);
+    }
+
     private String getFolderByDbType(DatabaseType dbType) {
         switch (dbType) {
             case MYSQL:

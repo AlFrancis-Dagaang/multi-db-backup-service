@@ -2,13 +2,16 @@ package dev.pollywag.multidbbackupservice.service;
 
 import dev.pollywag.multidbbackupservice.exception.BackupException;
 import dev.pollywag.multidbbackupservice.factory.DatabaseStrategyFactory;
+import dev.pollywag.multidbbackupservice.factory.StorageStrategyFactory;
 import dev.pollywag.multidbbackupservice.model.entity.BackupLog;
 import dev.pollywag.multidbbackupservice.model.entity.BackupMetadata;
 import dev.pollywag.multidbbackupservice.model.enums.BackupType;
+import dev.pollywag.multidbbackupservice.model.enums.StorageType;
 import dev.pollywag.multidbbackupservice.model.request.RestoreRequest;
 import dev.pollywag.multidbbackupservice.model.response.RestoreResponse;
 import dev.pollywag.multidbbackupservice.repository.BackupMetadataRepository;
 import dev.pollywag.multidbbackupservice.strategy.database.DatabaseBackupStrategy;
+import dev.pollywag.multidbbackupservice.strategy.storage.StorageStrategy;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -18,13 +21,16 @@ public class RestoreService {
 
     private final BackupMetadataRepository metadataRepository;
     private final DatabaseStrategyFactory dbFactory;
+    private final StorageStrategyFactory storageFactory;
     private final LogService logService;
 
     public RestoreService(BackupMetadataRepository metadataRepository,
                           DatabaseStrategyFactory dbFactory,
+                          StorageStrategyFactory storageFactory,
                           LogService logService) {
         this.metadataRepository = metadataRepository;
         this.dbFactory = dbFactory;
+        this.storageFactory = storageFactory;
         this.logService = logService;
     }
 
@@ -86,32 +92,39 @@ public class RestoreService {
 
     /**
      * Restores a single backup file (handles decompression automatically).
+     * Uses storage strategy to resolve path (local file or S3 download).
      */
     private void restoreSingle(DatabaseBackupStrategy strategy,
                                BackupMetadata metadata,
                                RestoreRequest request) throws Exception {
 
-        // Locate the backup file on disk
-        File backupFile = new File(metadata.getStoragePath());
+        StorageStrategy storageStrategy = storageFactory.getStrategy(metadata.getStorageType());
+        File backupFile = storageStrategy.resolveToLocalFile(metadata.getStoragePath());
 
         if (!backupFile.exists()) {
             throw new BackupException(
-                    "Backup file not found on disk: " + metadata.getStoragePath());
+                    "Backup file not found: " + metadata.getStoragePath());
         }
 
         File dumpFile = backupFile;
 
-        // Decompress if needed (.gz)
-        if (metadata.isCompressed()) {
-            dumpFile = strategy.decompressBackup(backupFile);
-        }
+        try {
+            // Decompress if needed (.gz)
+            if (metadata.isCompressed()) {
+                dumpFile = strategy.decompressBackup(backupFile);
+            }
 
-        // Run the restore
-        strategy.restoreBackup(dumpFile, request);
-
-        // Clean up the temp decompressed file (not the original archive)
-        if (metadata.isCompressed() && dumpFile.exists()) {
-            dumpFile.delete();
+            // Run the restore
+            strategy.restoreBackup(dumpFile, request);
+        } finally {
+            // Clean up temp decompressed file if we created it
+            if (metadata.isCompressed() && dumpFile != backupFile && dumpFile.exists()) {
+                dumpFile.delete();
+            }
+            // For S3 (and other cloud), backupFile is a temp download — delete it
+            if (metadata.getStorageType() != StorageType.LOCAL && backupFile.exists()) {
+                backupFile.delete();
+            }
         }
     }
 

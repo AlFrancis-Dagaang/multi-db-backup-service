@@ -87,12 +87,10 @@ public class BackupService {
 
             String finalLocation = storage.store(backupFile, request);
 
-            File storedBackupFile = new File(finalLocation);
-
             // SUCCESS LOG
             logService.success(log, finalLocation);
 
-            saveMetaData(request, storedBackupFile, finalLocation, log );
+            saveMetaData(request, backupFile, finalLocation, log);
 
             return new BackupResponse(
                     "SUCCESS",
